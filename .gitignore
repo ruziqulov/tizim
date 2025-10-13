@@ -1,0 +1,30 @@
+# 🔒 Maxfiy fayllar
+.env
+
+# 🧠 Python kesh fayllari
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 📦 Virtual muhit (venv)
+venv/
+env/
+.venv/
+ENV/
+env.bak/
+
+# 🗂️ IDE sozlamalari
+.vscode/
+.idea/
+
+# ⚙️ OS tizim fayllari
+.DS_Store
+Thumbs.db
+
+# 🧾 Log fayllar
+*.log
+
+# 📁 Railway va Git fayllar uchun keraksiz cache
+*.sqlite3
+*.db

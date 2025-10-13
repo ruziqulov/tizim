@@ -1,0 +1,42 @@
+{
+  "groups": {
+    "Avto 13-24": {
+      "code": "2025",
+      "students": [
+        "Abdulatiboyev Hasanjon",
+        "Abdurashidov Behruzbek",
+        "Abdug‘amuev Sunnatillo",
+        "Adhamjonov Ibrohim",
+        "G‘ofurjonov Boburjon",
+        "Qaxxarov",
+        "Komilov Mohirjon",
+        "Mirazimov Azamat",
+        "Mirzayev Muhammadamin",
+        "Nigmonov Alisherbek",
+        "Numonjonov Abdulloh",
+        "Obidov Abdulmalik",
+        "Oblakulov Jahongir",
+        "O‘ngarov Muhriddin",
+        "Ro‘ziqulov Zoyirjon",
+        "Sadullayev Jasur",
+        "Sayidbekov Mo‘min",
+        "Shagijyev Tursunjon",
+        "Sharipov Umar",
+        "To‘laganov Faxriddin",
+        "Turg‘unjonov Abdulloh",
+        "Urokov Umidjon",
+        "Valiyev Abdurasil",
+        "Xudoyqulov Sayfulloh",
+        "Xolmurodov Azizbek",
+        "Zokirov Bobur"
+      ]
+    }
+  },
+  "attendance": {},
+  "settings": {
+    "log_chat_id": null
+  },
+  "meta": {
+    "created": "2025-10-13T22:00:21.934384"
+  }
+}
