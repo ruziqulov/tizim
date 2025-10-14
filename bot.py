@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Professional Attendance Bot - Complete single-file implementation
-Author: Generated for the user (ruziqulov)
+Yordam
+Professional Attendance Bot (Full, Robust, Single File)
+Author: Copilot (for ruziqulov)
 Description:
- - Admin-only Telegram bot for school attendance using pyTelegramBotAPI (telebot)
- - JSON persistence (db.json) for groups, attendance, and settings
- - Prepopulated sample group "Avto 13-24"
- - Numeric keypad for code entry (0-9, backspace, submit)
- - Student status toggles (present / sababsiz / sababli) with simple cycle
- - Bulk controls: mark all present / mark all absent
- - Confirmation preview, para (lesson) selection, final confirmation
- - Final attendance summary saved to JSON and optionally sent to a configured group chat
- - Reports: daily / weekly / monthly / yearly (month selection excludes Jun/Jul/Aug)
- - Backup/restore, sample data, and admin commands
- - Robust error handling; no global Markdown parsing to avoid "can't parse entities" errors
- - Use .env for BOT_TOKEN and ADMIN_IDS (comma separated)
-Requirements:
- - pip install pyTelegramBotAPI python-dotenv
-Start:
- - Create .env with BOT_TOKEN and ADMIN_IDS
- - Run: python bot.py
+ - Admin-only Telegram bot for school attendance
+ - pyTelegramBotAPI, dotenv, JSON persistence
+ - All buttons (orqaga, reports, group selection, etc.) work correctly
+ - Robust flow, unique callback prefixes, strong state handling
+ - All commands (/start, /cancel, /admins, /backup, /restore_from, /sample, /set_log_chat) work
 """
 
 import os
 import sys
 import json
-import csv
 import time
 import logging
 from datetime import datetime, timedelta, date
@@ -37,30 +25,23 @@ from dotenv import load_dotenv
 import telebot
 from telebot import types
 
-# -------------------------
-# Logging
-# -------------------------
+# --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("attendance_bot")
 
-# -------------------------
-# Load env
-# -------------------------
+# --- ENV ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN not set in .env")
-    raise RuntimeError("BOT_TOKEN not set in .env")
+    sys.exit(1)
 
+ADMIN_IDS = []
 RAW_ADMINS = os.getenv("ADMIN_IDS", "")
-ADMIN_IDS: List[int] = []
 if RAW_ADMINS:
     for p in RAW_ADMINS.split(","):
-        p = p.strip()
-        if not p:
-            continue
         try:
-            ADMIN_IDS.append(int(p))
+            ADMIN_IDS.append(int(p.strip()))
         except Exception:
             logger.warning("Invalid ADMIN_IDS entry ignored: %r", p)
 
@@ -68,31 +49,18 @@ DB_FILE = os.getenv("DB_FILE", "db.json")
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
-# -------------------------
-# Bot init (no global parse_mode)
-# -------------------------
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
 
-# -------------------------
-# TEMP state for admins (per-admin ephemeral)
-# -------------------------
 TEMP: Dict[int, Dict[str, Any]] = {}
 
-# -------------------------
-# Utility helpers
-# -------------------------
-def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+# --- Helpers ---
+def is_admin(uid): return uid in ADMIN_IDS
 
 def admin_only_message(func):
     @wraps(func)
     def wrapper(m, *a, **k):
-        uid = m.from_user.id
-        if not is_admin(uid):
-            try:
-                bot.send_message(uid, "Bu bot faqat adminlar uchun. Iltimos, admin bilan bog'laning.")
-            except Exception:
-                logger.exception("Failed to inform non-admin")
+        if not is_admin(m.from_user.id):
+            safe_send(m.from_user.id, "Bu bot faqat adminlar uchun!")
             return
         return func(m, *a, **k)
     return wrapper
@@ -100,49 +68,31 @@ def admin_only_message(func):
 def admin_only_callback(func):
     @wraps(func)
     def wrapper(call, *a, **k):
-        uid = call.from_user.id
-        if not is_admin(uid):
-            try:
-                bot.answer_callback_query(call.id, "Bu tugma faqat adminlarga ochiq.", show_alert=True)
-            except Exception:
-                logger.exception("answer_callback_query failed")
+        if not is_admin(call.from_user.id):
+            bot.answer_callback_query(call.id, "Bu tugma faqat adminlarga!", show_alert=True)
             return
         return func(call, *a, **k)
     return wrapper
 
-def safe_send(chat_id: int, text: str, reply_markup: Optional[types.InlineKeyboardMarkup] = None):
-    try:
-        bot.send_message(chat_id, text, reply_markup=reply_markup)
+def safe_send(chat_id, text, reply_markup=None):
+    try: bot.send_message(chat_id, text, reply_markup=reply_markup)
+    except Exception: logger.exception("safe_send failed")
+
+def safe_edit(chat_id, message_id, text, reply_markup=None):
+    try: bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup)
     except Exception:
-        logger.exception("safe_send failed")
+        logger.exception("safe_edit fallback send_message")
+        try: bot.send_message(chat_id, text, reply_markup=reply_markup)
+        except Exception: logger.exception("safe_edit fallback failed")
 
-def safe_edit(chat_id: int, message_id: int, text: str, reply_markup: Optional[types.InlineKeyboardMarkup] = None):
-    try:
-        bot.edit_message_text(text, chat_id, message_id, reply_markup=reply_markup)
-    except Exception:
-        logger.exception("safe_edit failed; falling back to send_message")
-        try:
-            bot.send_message(chat_id, text, reply_markup=reply_markup)
-        except Exception:
-            logger.exception("fallback send failed")
+def safe_edit_reply_markup(chat_id, message_id, reply_markup):
+    try: bot.edit_message_reply_markup(chat_id, message_id, reply_markup=reply_markup)
+    except Exception: logger.exception("safe_edit_reply_markup failed")
 
-def safe_edit_reply_markup(chat_id: int, message_id: int, reply_markup: Optional[types.InlineKeyboardMarkup]):
-    try:
-        bot.edit_message_reply_markup(chat_id, message_id, reply_markup=reply_markup)
-    except Exception:
-        logger.exception("safe_edit_reply_markup failed")
+def encode_cb(s): return str(s).replace("%","%%").replace(" ","_~_").replace("\n","__nl__")
+def decode_cb(s): return s.replace("__nl__","\n").replace("_~_"," ").replace("%%","%")
 
-def encode_cb(s: str) -> str:
-    if not isinstance(s, str):
-        s = str(s)
-    return s.replace("%", "%%").replace(" ", "_~_").replace("\n", "__nl__")
-
-def decode_cb(s: str) -> str:
-    return s.replace("__nl__", "\n").replace("_~_", " ").replace("%%", "%")
-
-# -------------------------
-# DB helpers (JSON)
-# -------------------------
+# --- DB ---
 def ensure_db():
     if not os.path.exists(DB_FILE):
         base = {
@@ -151,19 +101,19 @@ def ensure_db():
             "settings": {"log_chat_id": None},
             "meta": {"created": datetime.now().isoformat()}
         }
-        with open(DB_FILE, "w", encoding="utf-8") as f:
+        with open(DB_FILE,"w",encoding="utf-8") as f:
             json.dump(base, f, ensure_ascii=False, indent=2)
 
-def load_db() -> Dict[str, Any]:
+def load_db():
     ensure_db()
-    with open(DB_FILE, "r", encoding="utf-8") as f:
+    with open(DB_FILE,"r",encoding="utf-8") as f:
         return json.load(f)
 
-def save_db(db: Dict[str, Any]):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
+def save_db(db):
+    with open(DB_FILE,"w",encoding="utf-8") as f:
         json.dump(db, f, ensure_ascii=False, indent=2)
 
-def backup_db() -> Optional[str]:
+def backup_db():
     try:
         ensure_db()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -176,7 +126,7 @@ def backup_db() -> Optional[str]:
         logger.exception("backup failed")
         return None
 
-def restore_db(file_path: str) -> bool:
+def restore_db(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -187,31 +137,25 @@ def restore_db(file_path: str) -> bool:
         logger.exception("restore failed")
         return False
 
-# High-level DB operations
-def get_groups() -> Dict[str, Any]:
-    db = load_db()
-    return db.get("groups", {})
+def get_groups(): return load_db().get("groups", {})
 
-def add_group(name: str, students: List[str], code: str):
+def add_group(name, students, code):
     db = load_db()
     db.setdefault("groups", {})
     db["groups"][name] = {"code": code, "students": students}
     save_db(db)
     logger.info("Group added: %s (%d)", name, len(students))
 
-def update_group(name: str, students: Optional[List[str]] = None, code: Optional[str] = None):
+def update_group(name, students=None, code=None):
     db = load_db()
     db.setdefault("groups", {})
-    if name not in db["groups"]:
-        db["groups"][name] = {}
-    if students is not None:
-        db["groups"][name]["students"] = students
-    if code is not None:
-        db["groups"][name]["code"] = code
+    if name not in db["groups"]: db["groups"][name] = {}
+    if students is not None: db["groups"][name]["students"] = students
+    if code is not None: db["groups"][name]["code"] = code
     save_db(db)
     logger.info("Group updated: %s", name)
 
-def delete_group(name: str) -> bool:
+def delete_group(name):
     db = load_db()
     if "groups" in db and name in db["groups"]:
         del db["groups"][name]
@@ -220,11 +164,9 @@ def delete_group(name: str) -> bool:
         return True
     return False
 
-def get_settings() -> Dict[str, Any]:
-    db = load_db()
-    return db.get("settings", {})
+def get_settings(): return load_db().get("settings", {})
 
-def set_log_chat(chat_id: int):
+def set_log_chat(chat_id):
     db = load_db()
     db.setdefault("settings", {})
     db["settings"]["log_chat_id"] = chat_id
@@ -238,11 +180,10 @@ def clear_log_chat():
     save_db(db)
     logger.info("Log chat cleared")
 
-def record_attendance(date_key: str, group: str, para: str, status_map: Dict[str, str], recorder: Dict[str, str]):
+def record_attendance(date_key, group, para, status_map, recorder):
     db = load_db()
     db.setdefault("attendance", {})
     db["attendance"].setdefault(date_key, [])
-    # Normalize
     present = [s for s, st in status_map.items() if st == "present"]
     sababsiz = [s for s, st in status_map.items() if st == "sababsiz"]
     sababli = [s for s, st in status_map.items() if st == "sababli"]
@@ -258,15 +199,12 @@ def record_attendance(date_key: str, group: str, para: str, status_map: Dict[str
     }
     db["attendance"][date_key].append(rec)
     save_db(db)
-    logger.info("Attendance saved for %s on %s para=%s by %s", group, date_key, para, recorder.get("name"))
+    logger.info("Attendance saved for %s on %s para=%s", group, date_key, para)
 
-def get_attendance_by_date(date_key: str) -> List[Dict[str, Any]]:
-    db = load_db()
-    return db.get("attendance", {}).get(date_key, [])
+def get_attendance_by_date(date_key): return load_db().get("attendance", {}).get(date_key, [])
 
-def get_attendance_in_range(start_date: str, end_date: str) -> List[Dict[str, Any]]:
-    db = load_db()
-    attendance = db.get("attendance", {})
+def get_attendance_in_range(start_date, end_date):
+    attendance = load_db().get("attendance", {})
     out = []
     s = datetime.strptime(start_date, "%Y-%m-%d").date()
     e = datetime.strptime(end_date, "%Y-%m-%d").date()
@@ -276,56 +214,43 @@ def get_attendance_in_range(start_date: str, end_date: str) -> List[Dict[str, An
         cur += timedelta(days=1)
     return out
 
-# -------------------------
-# Ensure sample group "Avto 13-24"
-# -------------------------
+# --- Ensure Sample Group ---
 def ensure_sample():
     groups = get_groups()
     if "Avto 13-24" not in groups:
-        students = [
-    "Abdulatiboyev Hasanjon","Abdurashidov Behruzbek","Abdug‘amuev Sunnatillo",
-    "Adhamjonov Ibrohim","G‘ofurjonov Boburjon","Qaxxarov","Komilov Mohirjon",
-    "Mirazimov Azamat","Mirzayev Muhammadamin","Nigmonov Alisherbek",
-    "Numonjonov Abdulloh","Obidov Abdulmalik","Oblakulov Jahongir",
-    "O‘ngarov Muhriddin","Ro‘ziqulov Zoyirjon","Sadullayev Jasur",
-    "Sayidbekov Mo‘min","Shagijyev Tursunjon","Sharipov Umar",
-    "To‘laganov Faxriddin","Turg‘unjonov Abdulloh","Urokov Umidjon",
-    "Valiyev Abdurasil","Xudoyqulov Sayfulloh","Xolmurodov Azizbek","Zokirov Bobur",
-  ]
-        add_group("Avto 13-24", students, "2025")
+        add_group("Avto 13-24",
+            [
+                "Abdulatiboyev Hasanjon","Abdurashidov Behruzbek","Abdug‘amuev Sunnatillo",
+                "Adhamjonov Ibrohim","G‘ofurjonov Boburjon","Qaxxarov","Komilov Mohirjon",
+                "Mirazimov Azamat","Mirzayev Muhammadamin","Nigmonov Alisherbek",
+                "Numonjonov Abdulloh","Obidov Abdulmalik","Oblakulov Jahongir",
+                "O‘ngarov Muhriddin","Ro‘ziqulov Zoyirjon","Sadullayev Jasur",
+                "Sayidbekov Mo‘min","Shagijyev Tursunjon","Sharipov Umar",
+                "To‘laganov Faxriddin","Turg‘unjonov Abdulloh","Urokov Umidjon",
+                "Valiyev Abdurasil","Xudoyqulov Sayfulloh","Xolmurodov Azizbek","Zokirov Bobur",
+            ], "2025")
         logger.info("Sample group Avto 13-24 added")
-
 ensure_sample()
 
-# -------------------------
-# UI: keyboards
-# -------------------------
+# ----------- UI Keyboards -----------
 def main_start_kb():
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton("📝 Davomat olish", callback_data="menu_davomat"),
+        types.InlineKeyboardButton("📝 Davomat olish", callback_data="menu_attend"),
         types.InlineKeyboardButton("📊 Hisobotlar", callback_data="menu_reports"),
         types.InlineKeyboardButton("ℹ️ Yordam", callback_data="menu_help")
     )
     return kb
 
-def group_kb(back_cb: str = "back_main"):
+def attend_group_kb():
     groups = get_groups()
     kb = types.InlineKeyboardMarkup(row_width=1)
-    if not groups:
-        kb.add(types.InlineKeyboardButton("— Guruh topilmadi —", callback_data="noop"))
-    else:
-        # Show Avto 13-24 first if exists
-        ordered = sorted(groups.keys())
-        if "Avto 13-24" in ordered:
-            ordered.remove("Avto 13-24")
-            ordered.insert(0, "Avto 13-24")
-        for g in ordered:
-            kb.add(types.InlineKeyboardButton(f"👥 {g}", callback_data=f"select_group::{encode_cb(g)}"))
-    kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data=back_cb))
+    for g in sorted(groups.keys()):
+        kb.add(types.InlineKeyboardButton(f"👥 {g}", callback_data=f"attend_select_group::{encode_cb(g)}"))
+    kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_main"))
     return kb
 
-def student_kb(group: str, status_map: Dict[str, str]):
+def student_kb(group, status_map):
     students = get_groups()[group]["students"]
     kb = types.InlineKeyboardMarkup(row_width=2)
     for s in students:
@@ -338,7 +263,7 @@ def student_kb(group: str, status_map: Dict[str, str]):
     )
     kb.row(
         types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="confirm_students"),
-        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_groups")
+        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_attend_groups")
     )
     return kb
 
@@ -350,7 +275,7 @@ def para_kb():
         types.InlineKeyboardButton("3-para", callback_data="para::3"),
         types.InlineKeyboardButton("4-para", callback_data="para::4"),
         types.InlineKeyboardButton("Butun kun", callback_data="para::all"),
-        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_students")
+        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_attend_students")
     )
     return kb
 
@@ -359,7 +284,7 @@ def final_confirm_kb():
     kb.add(
         types.InlineKeyboardButton("✅ Tasdiqlash", callback_data="final_confirm"),
         types.InlineKeyboardButton("❌ Bekor qilish", callback_data="final_cancel"),
-        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_para")
+        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_attend_para")
     )
     return kb
 
@@ -374,8 +299,15 @@ def reports_kb():
     )
     return kb
 
+def report_group_kb():
+    groups = get_groups()
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for g in sorted(groups.keys()):
+        kb.add(types.InlineKeyboardButton(f"👥 {g}", callback_data=f"report_select_group::{encode_cb(g)}"))
+    kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_reports"))
+    return kb
+
 def month_kb():
-    # Exclude June(6), July(7), August(8) per user request
     months = [
         ("Yanvar", 1), ("Fevral", 2), ("Mart", 3), ("Aprel", 4), ("May", 5),
         ("Sentabr", 9), ("Oktabr", 10), ("Noyabr", 11), ("Dekabr", 12)
@@ -383,180 +315,174 @@ def month_kb():
     kb = types.InlineKeyboardMarkup(row_width=3)
     for name, idx in months:
         kb.add(types.InlineKeyboardButton(name, callback_data=f"month::{idx}"))
-    kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_reports"))
+    kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_report_group"))
     return kb
 
-# -------------------------
-# START message (exact per user)
-# -------------------------
 START_TEXT = (
     "🏫 Avto 13-24 Guruhi Davomat Tizimiga Xush Kelibsiz!\n"
     "Assalomu alaykum, barcha o'quvchilar!\n"
     "Bu bot orqali siz quyidagi amallarni bajarishingiz mumkin:\n"
 )
 
-# -------------------------
-# Handlers: start / main
-# -------------------------
+# --- Handlers: Start/Main ---
 @bot.message_handler(commands=["start"])
 def cmd_start(m: types.Message):
-    uid = m.from_user.id
-    if is_admin(uid):
-        try:
-            bot.send_message(uid, START_TEXT, reply_markup=main_start_kb())
-        except Exception:
-            logger.exception("start send failed")
-            safe_send(uid, START_TEXT, reply_markup=main_start_kb())
+    if is_admin(m.from_user.id):
+        safe_send(m.from_user.id, START_TEXT, reply_markup=main_start_kb())
     else:
-        safe_send(uid, "Bu bot faqat adminlar tomonidan boshqariladi. Iltimos, admin bilan bog'laning.")
+        safe_send(m.from_user.id, "Bu bot faqat adminlar uchun!")
 
 @bot.callback_query_handler(func=lambda c: c.data == "menu_help")
 @admin_only_callback
-def cb_help(call: types.CallbackQuery):
+def cb_help(call):
     bot.answer_callback_query(call.id)
     text = (
-        "Yordam:\n"
-        "- Davomat: guruh tanlang -> kodni kiriting yoki tugmalardan foydalaning -> o'quvchilarni belgilang -> para tanlang -> tasdiqlang\n"
-        "- Hisobotlar: Kunlik/Haftalik/Oylik/Yillik\n"
-        "- /set_log_chat - bu bot tasdiqlangan davomatlarni qaysi guruhga yuborishini sozlash\n"
-    )
+    "ℹ️ Yordam: Davomat Botidan Foydalanish Qo‘llanmasi ℹ️\n\n"
+    "🔹 **Bot haqida**\n"
+    "Bu bot maktab/guruh uchun davomatni tez va oson tarzda yuritish uchun mo‘ljallangan. "
+    "Faqat administratorlar foydalanishi mumkin. Barcha natijalar xavfsiz saqlanadi va hisobotlar avtomatik shakllantiriladi.\n\n"
+    "---\n\n"
+    "🔹 **Asosiy funksiyalar**\n"
+    "1. **Davomat olish**  \n"
+    "   - Guruh tanlash  \n"
+    "   - Har bir o‘quvchi uchun holatini belgilash (✅ Kelgan, ❌ Sababsiz, ⚠️ Sababli)  \n"
+    "   - Bulk tugmalari: barchasini kelgan/sababsiz deb belgilash\n"
+    "   - Para (dars) tanlash: 1-para, 2-para, 3-para, 4-para yoki butun kun\n"
+    "   - Davomatni tasdiqlash va saqlash  \n"
+    "   - Natijani avtomatik log chatga yuborish\n\n"
+    "2. **Hisobotlar**\n"
+    "   - **Kunlik**: tanlangan guruh uchun bugungi davomat\n"
+    "   - **Haftalik**: oxirgi 7 kun uchun hisobot\n"
+    "   - **Oylik**: istalgan oyni tanlab, o‘sha oy uchun hisobot (Iyun, Iyul, Avgust ko‘rsatilmaydi)\n"
+    "   - **Yillik**: tanlangan guruh uchun joriy yil bo‘yicha to‘liq hisobot\n\n"
+    "3. **Zaxira va Tiklash**\n"
+    "   - /backup: hozirgi ma’lumotlarni fayl ko‘rinishida zaxiralash\n"
+    "   - /restore_from <fayl_nomi>: oldingi zaxiradan tiklash\n\n"
+    "4. **Guruhlar va Adminlar**\n"
+    "   - /list_groups: barcha guruhlarni ko‘rish\n"
+    "   - /admins: adminlar ro‘yxatini ko‘rish\n"
+    "5. **Log chat sozlamalari**\n"
+    "   - /set_log_chat: bu buyruqni guruhda yuborsangiz, davomat natijalari shu guruhga yuboriladi. "
+    "Yoki /set_log_chat <chat_id> orqali aniq chatni tanlang.\n"
+    "   - /get_log_chat: hozirgi log chatni ko‘rish\n"
+    "   - /clear_log_chat: log chatni olib tashlash\n\n"
+    "6. **Jarayonni bekor qilish**\n"
+    "   - /cancel: istalgan vaqtda jarayonni bekor qiladi\n\n"
+    "---\n\n"
+    "🔹 **Foydalanish tartibi**\n"
+    "1. **/start** buyrug‘ini yuboring, asosiy menyu ochiladi.\n"
+    "2. “Davomat olish” tugmasini bosing.\n"
+    "   - Guruh tanlang (Avto 13-24 va boshqalar).\n"
+    "   - O‘quvchilar holatini belgilang (ism ustiga bosib aylantirasiz).\n"
+    "   - Bulk tugmalaridan foydalanib barchani tez belgilang.\n"
+    "   - “Tasdiqlash” tugmasini bosing.\n"
+    "   - Para tanlang (dars yoki butun kun).\n"
+    "   - Yakuniy tasdiqlash oynasida natijani ko‘rib, “Tasdiqlash” tugmasini bosing.\n"
+    "   - Natija log chatga yuboriladi va ma’lumotlar saqlanadi.\n\n"
+    "3. “Hisobotlar” bo‘limidan istalgan hisobot turini tanlang. Guruh va oynini tanlang, natijani ko‘ring.\n"
+    "4. “Yordam” bo‘limida ushbu to‘liq qo‘llanmani o‘qing.\n\n"
+    "---\n\n"
+    "🔹 **Botdan faqat adminlar foydalanishi mumkin!**\n"
+    "Agar siz admin bo‘lmasangiz, botdan foydalana olmaysiz. Admin ro‘yxatini /admins orqali ko‘rishingiz mumkin.  \n"
+    "Adminlar ro‘yxatini yangilash uchun dasturchiga murojaat qiling.\n\n"
+    "---\n\n"
+    "🔹 **Xatoliklar va savollar**\n"
+    "Agar biror tugma ishlamasa yoki xato bo‘lsa:\n"
+    "- /cancel orqali jarayonni bekor qilib, /start dan qayta boshlang\n"
+    "- Botni qayta ishga tushiring (dasturchiga murojaat)\n"
+    "- Savollar uchun: @Z_Ruziqulovv\n\n"
+    "---\n\n"
+    "🔹 **Qo‘shimcha**\n"
+    "- Bot ma’lumotlari avtomatik JSON faylda saqlanadi.\n"
+    "- Har bir attendance va hisobot to‘liq, aniq, oson o‘qiladigan formatda.\n"
+    "- Orqaga (⬅️) tugmalari har doim to‘g‘ri joyga qaytaradi.\n"
+    "- Barcha tugmalar va menyular to‘liq ishlaydi.\n\n"
+    "---\n\n"
+    "**Botdan foydalanishda muammo bo‘lsa yoki yangi funksiyalar kerak bo‘lsa, admin yoki dasturchiga murojaat qiling!**"
+)
+
     safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=main_start_kb())
 
-# -------------------------
-# Menu: Davomat
-# -------------------------
-@bot.callback_query_handler(func=lambda c: c.data == "menu_davomat")
+# --- Flow: Attend ---
+@bot.callback_query_handler(func=lambda c: c.data == "menu_attend")
 @admin_only_callback
-def cb_menu_davomat(call: types.CallbackQuery):
+def cb_menu_attend(call):
     bot.answer_callback_query(call.id)
-    # show only Avto 13-24 first per user's request
-    groups = get_groups()
-    if "Avto 13-24" in groups:
-        kb = types.InlineKeyboardMarkup(row_width=1)
-        kb.add(types.InlineKeyboardButton("👥 Avto 13-24", callback_data=f"select_group::{encode_cb('Avto 13-24')}"))
-        kb.add(types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_main"))
-        safe_edit(call.message.chat.id, call.message.message_id, "Davomat olish — guruhni tanlang:", reply_markup=kb)
-    else:
-        safe_edit(call.message.chat.id, call.message.message_id, "Davomat olish — guruhni tanlang:", reply_markup=group_kb("back_main"))
+    safe_edit(call.message.chat.id, call.message.message_id, "Guruhni tanlang:", reply_markup=attend_group_kb())
 
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("select_group::"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("attend_select_group::"))
 @admin_only_callback
-def cb_select_group(call: types.CallbackQuery):
+def cb_attend_select_group(call):
     bot.answer_callback_query(call.id)
-    payload = call.data.split("::",1)[1]
-    group = decode_cb(payload)
-    groups = get_groups()
-    if group not in groups:
-        bot.answer_callback_query(call.id, "Guruh topilmadi.")
-        return
-    uid = call.from_user.id
-    # Initialize status map: default all present
-    students = groups[group]["students"]
+    group = decode_cb(call.data.split("::",1)[1])
+    students = get_groups()[group]["students"]
     status_map = {s: "present" for s in students}
-    TEMP[uid] = {"flow": "attend", "group": group, "status_map": status_map}
-    text = f"Sinf: {group}\nO'quvchilar ro'yxati (✅ — kelgan):\n\n(istalgan ism ustiga bosib holatini o'zgartiring)"
-    kb = student_kb(group, status_map)
-    safe_edit(call.message.chat.id, call.message.message_id, text, reply_markup=kb)
+    TEMP[call.from_user.id] = {"flow": "attend", "group": group, "status_map": status_map}
+    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {group}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=student_kb(group, status_map))
 
-@bot.callback_query_handler(func=lambda c: c.data == "back_groups")
+@bot.callback_query_handler(func=lambda c: c.data == "back_attend_groups")
 @admin_only_callback
-def cb_back_groups(call: types.CallbackQuery):
+def cb_back_attend_groups(call):
     bot.answer_callback_query(call.id)
-    safe_edit(call.message.chat.id, call.message.message_id, "Guruhlarni tanlang:", reply_markup=group_kb("back_main"))
+    safe_edit(call.message.chat.id, call.message.message_id, "Guruhni tanlang:", reply_markup=attend_group_kb())
 
-# -------------------------
-# Student toggle / bulk
-# -------------------------
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("toggle_student::"))
 @admin_only_callback
-def cb_toggle_student(call: types.CallbackQuery):
+def cb_toggle_student(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state or state.get("flow") != "attend":
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
+    if not state or state.get("flow") != "attend": return
     student = decode_cb(call.data.split("::",1)[1])
-    status_map = state["status_map"]
-    current = status_map.get(student, "present")
-    # cycle
-    nxt = "present"
-    if current == "present":
-        nxt = "sababsiz"
-    elif current == "sababsiz":
-        nxt = "sababli"
-    elif current == "sababli":
-        nxt = "present"
-    status_map[student] = nxt
-    state["status_map"] = status_map
-    # update UI (keyboard)
-    kb = student_kb(state["group"], status_map)
-    try:
-        safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
-    except Exception:
-        safe_edit_reply_markup(call.message.chat.id, call.message.message_id, kb)
+    current = state["status_map"].get(student, "present")
+    nxt = "sababsiz" if current == "present" else "sababli" if current == "sababsiz" else "present"
+    state["status_map"][student] = nxt
+    kb = student_kb(state["group"], state["status_map"])
+    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
     bot.answer_callback_query(call.id, f"{student}: {nxt}")
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("bulk::"))
 @admin_only_callback
-def cb_bulk(call: types.CallbackQuery):
+def cb_bulk(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
-    action = call.data.split("::",1)[1]  # 'present' or 'sababsiz'
+    action = call.data.split("::",1)[1]
     state = TEMP.get(uid)
-    if not state or state.get("flow") != "attend":
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
-    group = state["group"]
-    students = get_groups()[group]["students"]
-    if action == "present":
-        status_map = {s: "present" for s in students}
-    else:
-        status_map = {s: "sababsiz" for s in students}
+    if not state or state.get("flow") != "attend": return
+    students = get_groups()[state["group"]]["students"]
+    status_map = {s: "present" if action=="present" else "sababsiz" for s in students}
     state["status_map"] = status_map
-    kb = student_kb(group, status_map)
-    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {group}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
+    kb = student_kb(state["group"], status_map)
+    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
     bot.answer_callback_query(call.id, "Barcha holatlar yangilandi.")
 
-# -------------------------
-# Confirm students -> para selection
-# -------------------------
 @bot.callback_query_handler(func=lambda c: c.data == "confirm_students")
 @admin_only_callback
-def cb_confirm_students(call: types.CallbackQuery):
+def cb_confirm_students(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state or state.get("flow") != "attend":
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
-    safe_edit(call.message.chat.id, call.message.message_id, "Nechanchi para uchun davomatni kiritmoqchisiz?", reply_markup=para_kb())
+    if not state or state.get("flow") != "attend": return
+    safe_edit(call.message.chat.id, call.message.message_id, "Nechanchi para uchun davomat?", reply_markup=para_kb())
 
-@bot.callback_query_handler(func=lambda c: c.data == "back_students")
+@bot.callback_query_handler(func=lambda c: c.data == "back_attend_students")
 @admin_only_callback
-def cb_back_students(call: types.CallbackQuery):
+def cb_back_attend_students(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state:
-        bot.answer_callback_query(call.id, "Holat topilmadi.")
-        return
+    if not state: return
     kb = student_kb(state["group"], state["status_map"])
     safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
 
-# -------------------------
-# Para selection -> preview
-# -------------------------
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("para::"))
 @admin_only_callback
-def cb_para(call: types.CallbackQuery):
+def cb_para(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state or state.get("flow") != "attend":
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
-    para = call.data.split("::",1)[1]  # '1','2','3','4','all'
+    if not state or state.get("flow") != "attend": return
+    para = call.data.split("::",1)[1]
     group = state["group"]
     status_map = state["status_map"]
     present = [s for s,st in status_map.items() if st == "present"]
@@ -580,60 +506,43 @@ def cb_para(call: types.CallbackQuery):
     state["preview"] = preview
     safe_edit(call.message.chat.id, call.message.message_id, preview, reply_markup=final_confirm_kb())
 
-# -------------------------
-# Final confirm / cancel / back
-# -------------------------
+@bot.callback_query_handler(func=lambda c: c.data == "back_attend_para")
+@admin_only_callback
+def cb_back_attend_para(call):
+    bot.answer_callback_query(call.id)
+    uid = call.from_user.id
+    state = TEMP.get(uid)
+    if not state: return
+    safe_edit(call.message.chat.id, call.message.message_id, "Nechanchi para uchun davomat?", reply_markup=para_kb())
+
 @bot.callback_query_handler(func=lambda c: c.data == "final_cancel")
 @admin_only_callback
-def cb_final_cancel(call: types.CallbackQuery):
+def cb_final_cancel(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     if uid in TEMP:
         state = TEMP[uid]
         kb = student_kb(state["group"], state["status_map"])
         safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
-    else:
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-
-@bot.callback_query_handler(func=lambda c: c.data == "back_para")
-@admin_only_callback
-def cb_back_para(call: types.CallbackQuery):
-    bot.answer_callback_query(call.id)
-    uid = call.from_user.id
-    state = TEMP.get(uid)
-    if not state:
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
-    safe_edit(call.message.chat.id, call.message.message_id, "Nechanchi para uchun davomatni kiritmoqchisiz?", reply_markup=para_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data == "final_confirm")
 @admin_only_callback
-def cb_final_confirm(call: types.CallbackQuery):
+def cb_final_confirm(call):
     bot.answer_callback_query(call.id)
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state:
-        bot.answer_callback_query(call.id, "Jarayon topilmadi.")
-        return
+    if not state: return
     group = state["group"]
     status_map = state["status_map"]
     para = state.get("selected_para", "all")
     date_key = datetime.now().strftime("%Y-%m-%d")
-    # recorder info
     user = call.from_user
     recorder = {
         "id": user.id,
         "name": (user.first_name or "") + (" " + user.last_name if user.last_name else ""),
         "username": user.username or ""
     }
-    # save to db
-    try:
-        record_attendance(date_key, group, para, status_map, recorder)
-    except Exception:
-        logger.exception("Failed to record attendance")
-        bot.answer_callback_query(call.id, "Saqlashda xato yuz berdi.")
-        return
-    # build final summary
+    record_attendance(date_key, group, para, status_map, recorder)
     present = [s for s,st in status_map.items() if st == "present"]
     sababsiz = [s for s,st in status_map.items() if st == "sababsiz"]
     sababli = [s for s,st in status_map.items() if st == "sababli"]
@@ -649,102 +558,56 @@ def cb_final_confirm(call: types.CallbackQuery):
         ("\n".join(f"- {s}" for s in sababli) if sababli else "—") +
         f"\n\n✅ Jami kelganlar: {len(present)}\n\n"
     )
-    recorder_label = recorder.get("username") and f"https://t.me/{recorder['username']}" or recorder.get("name") or str(recorder.get("id"))
-    final += f"Davomat @doniyorovic1 tomonidan olindi.\n\n"
+    final += f"Davomat @{recorder.get('username','')} tomonidan olindi.\n\n"
     if para != "all":
         final += f"⚠️ Ushbu o'quvchilar faqat {para_label} darsiga kelishmadi! ⚠️"
     else:
         final += "⚠️ Ushbu o'quvchilar darsga kelishmadi! ⚠️"
-    # Send to configured log chat if present, else send to admin who performed
     settings = get_settings()
     log_chat = settings.get("log_chat_id")
     try:
-        if log_chat:
-            bot.send_message(log_chat, final)
-        else:
-            # send to admin that confirmed
-            safe_send(uid, final)
+        if log_chat: bot.send_message(log_chat, final)
+        else: safe_send(uid, final)
     except Exception:
-        logger.exception("Failed to send final message to log or admin; at least sending to admin")
+        logger.exception("Failed to send final message to log or admin")
         safe_send(uid, final)
-    # clear TEMP
     TEMP.pop(uid, None)
-    # return to main menu
     safe_send(uid, "Asosiy menyu:", reply_markup=main_start_kb())
 
-# -------------------------
-# Reports flow: menu + interactions
-# -------------------------
+# --- Flow: Reports ---
 @bot.callback_query_handler(func=lambda c: c.data == "menu_reports")
 @admin_only_callback
-def cb_menu_reports(call: types.CallbackQuery):
+def cb_menu_reports(call):
     bot.answer_callback_query(call.id)
     safe_edit(call.message.chat.id, call.message.message_id, "Hisobotlar — tanlang:", reply_markup=reports_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("report::"))
 @admin_only_callback
-def cb_report_type(call: types.CallbackQuery):
+def cb_report_type(call):
     bot.answer_callback_query(call.id)
-    mode = call.data.split("::",1)[1]  # daily, weekly, monthly, yearly
-    uid = call.from_user.id
-    TEMP[uid] = {"flow": "report", "mode": mode}
-    # ask to choose a group
-    safe_edit(call.message.chat.id, call.message.message_id, "Guruhni tanlang:", reply_markup=group_kb("back_reports"))
+    mode = call.data.split("::",1)[1]
+    TEMP[call.from_user.id] = {"flow": "report", "mode": mode}
+    safe_edit(call.message.chat.id, call.message.message_id, "Guruhni tanlang:", reply_markup=report_group_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data == "back_reports")
 @admin_only_callback
-def cb_back_reports(call: types.CallbackQuery):
+def cb_back_reports(call):
     bot.answer_callback_query(call.id)
-    safe_edit(call.message.chat.id, call.message.message_id, "Hisobotlar bo'limi:", reply_markup=reports_kb())
+    safe_edit(call.message.chat.id, call.message.message_id, "Hisobotlar — tanlang:", reply_markup=reports_kb())
 
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("month::"))
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("report_select_group::"))
 @admin_only_callback
-def cb_month(call: types.CallbackQuery):
+def cb_report_select_group(call):
     bot.answer_callback_query(call.id)
+    group = decode_cb(call.data.split("::",1)[1])
     uid = call.from_user.id
     state = TEMP.get(uid)
-    if not state or state.get("flow") != "report" or state.get("mode") != "monthly":
-        bot.answer_callback_query(call.id, "Holat mos emas.")
-        return
-    month_idx = int(call.data.split("::",1)[1])
-    group = state.get("group_for_report")
-    year = datetime.now().year
-    start = date(year, month_idx, 1)
-    if month_idx == 12:
-        end = date(year, 12, 31)
-    else:
-        end = date(year, month_idx+1, 1) - timedelta(days=1)
-    arr = get_attendance_in_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    arr_group = [r for r in arr if r.get("group") == group]
-    if not arr_group:
-        safe_edit(call.message.chat.id, call.message.message_id, f"{start.strftime('%B %Y')} uchun {group} bo'yicha davomat topilmadi.")
-        TEMP.pop(uid, None)
-        return
-    lines = [f"📅 Oylik Davomat — {start.strftime('%B %Y')} — {group}"]
-    for rec in arr_group:
-        lines.append(f"\n📆 {rec.get('timestamp','')} — Para: {rec.get('para')}")
-        lines.append("✅ Kelganlar (" + str(len(rec.get("present",[]))) + "): " + (", ".join(rec.get("present",[])) if rec.get("present") else "—"))
-        lines.append("❌ Sababsiz (" + str(len(rec.get("sababsiz",[]))) + "): " + (", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
-    safe_edit(call.message.chat.id, call.message.message_id, "\n".join(lines))
-    TEMP.pop(uid, None)
-
-@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("select_group::"))
-@admin_only_callback
-def cb_select_group_report(call: types.CallbackQuery):
-    # This handler also used by reports: detect report flow
-    bot.answer_callback_query(call.id)
-    payload = call.data.split("::",1)[1]
-    group = decode_cb(payload)
-    uid = call.from_user.id
-    state = TEMP.get(uid)
-    if not state or state.get("flow") != "report":
-        # Not in report flow; ignore (other handler handles general selection)
-        return
+    if not state or state.get("flow") != "report": return
     mode = state.get("mode")
-    if mode == "daily":
+    if mode=="daily":
         day = datetime.now().strftime("%Y-%m-%d")
         arr = get_attendance_by_date(day)
-        arr_group = [r for r in arr if r.get("group") == group]
+        arr_group = [r for r in arr if r.get("group")==group]
         if not arr_group:
             safe_edit(call.message.chat.id, call.message.message_id, f"{day} uchun {group} bo'yicha davomat topilmadi.")
             TEMP.pop(uid, None)
@@ -752,39 +615,35 @@ def cb_select_group_report(call: types.CallbackQuery):
         lines = [f"📅 Davomat — {day} — {group}"]
         for rec in arr_group:
             lines.append(f"\n📚 Para: {rec.get('para')}")
-            lines.append("✅ Kelganlar (" + str(len(rec.get("present",[]))) + "): " + (", ".join(rec.get("present",[])) if rec.get("present") else "—"))
-            lines.append("❌ Sababsiz (" + str(len(rec.get("sababsiz",[]))) + "): " + (", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
+            lines.append("✅ Kelganlar ("+str(len(rec.get("present",[])))+"): "+(", ".join(rec.get("present",[])) if rec.get("present") else "—"))
+            lines.append("❌ Sababsiz ("+str(len(rec.get("sababsiz",[])))+"): "+(", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
         safe_edit(call.message.chat.id, call.message.message_id, "\n".join(lines))
         TEMP.pop(uid, None)
-        return
-    elif mode == "weekly":
+    elif mode=="weekly":
         end = datetime.now().date()
-        start = end - timedelta(days=6)
+        start = end-timedelta(days=6)
         arr = get_attendance_in_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        arr_group = [r for r in arr if r.get("group") == group]
+        arr_group = [r for r in arr if r.get("group")==group]
         if not arr_group:
-            safe_edit(call.message.chat.id, call.message.message_id, f"{start} — {end}: {group} uchun davomat topilmadi.")
+            safe_edit(call.message.chat.id, call.message.message_id, f"{start}-{end}: {group} uchun davomat topilmadi.")
             TEMP.pop(uid, None)
             return
         lines = [f"📅 Davomat — {start} — {end} — {group}"]
         for rec in arr_group:
             lines.append(f"\n📆 {rec.get('timestamp','')} — Para: {rec.get('para')}")
-            lines.append("✅ Kelganlar (" + str(len(rec.get("present",[]))) + "): " + (", ".join(rec.get("present",[])) if rec.get("present") else "—"))
-            lines.append("❌ Sababsiz (" + str(len(rec.get("sababsiz",[]))) + "): " + (", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
+            lines.append("✅ Kelganlar ("+str(len(rec.get("present",[])))+"): "+(", ".join(rec.get("present",[])) if rec.get("present") else "—"))
+            lines.append("❌ Sababsiz ("+str(len(rec.get("sababsiz",[])))+"): "+(", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
         safe_edit(call.message.chat.id, call.message.message_id, "\n".join(lines))
         TEMP.pop(uid, None)
-        return
-    elif mode == "monthly":
-        # set group_for_report and ask month
+    elif mode=="monthly":
         TEMP[uid]["group_for_report"] = group
-        safe_edit(call.message.chat.id, call.message.message_id, "Oyni tanlang (iyun,iyul,avgust ko'rsatilmaydi):", reply_markup=month_kb())
-        return
-    elif mode == "yearly":
+        safe_edit(call.message.chat.id, call.message.message_id, "Oyni tanlang:", reply_markup=month_kb())
+    elif mode=="yearly":
         year = datetime.now().year
-        start = date(year, 1, 1)
-        end = date(year, 12, 31)
+        start = date(year,1,1)
+        end = date(year,12,31)
         arr = get_attendance_in_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-        arr_group = [r for r in arr if r.get("group") == group]
+        arr_group = [r for r in arr if r.get("group")==group]
         if not arr_group:
             safe_edit(call.message.chat.id, call.message.message_id, f"{year} uchun {group} bo'yicha davomat topilmadi.")
             TEMP.pop(uid, None)
@@ -792,24 +651,59 @@ def cb_select_group_report(call: types.CallbackQuery):
         lines = [f"📈 Yillik Davomat — {year} — {group}"]
         for rec in arr_group:
             lines.append(f"\n📆 {rec.get('timestamp','')} — Para: {rec.get('para')}")
-            lines.append("✅ Kelganlar (" + str(len(rec.get("present",[]))) + "): " + (", ".join(rec.get("present",[])) if rec.get("present") else "—"))
+            lines.append("✅ Kelganlar ("+str(len(rec.get("present",[])))+"): "+(", ".join(rec.get("present",[])) if rec.get("present") else "—"))
         safe_edit(call.message.chat.id, call.message.message_id, "\n".join(lines))
         TEMP.pop(uid, None)
-        return
 
-# -------------------------
-# Admin helper commands for log chat setting
-# -------------------------
+@bot.callback_query_handler(func=lambda c: c.data == "back_report_group")
+@admin_only_callback
+def cb_back_report_group(call):
+    bot.answer_callback_query(call.id)
+    safe_edit(call.message.chat.id, call.message.message_id, "Guruhni tanlang:", reply_markup=report_group_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("month::"))
+@admin_only_callback
+def cb_month(call):
+    bot.answer_callback_query(call.id)
+    uid = call.from_user.id
+    state = TEMP.get(uid)
+    if not state or state.get("flow")!="report" or state.get("mode")!="monthly": return
+    month_idx = int(call.data.split("::",1)[1])
+    group = state.get("group_for_report")
+    year = datetime.now().year
+    start = date(year, month_idx, 1)
+    end = date(year, month_idx+1, 1)-timedelta(days=1) if month_idx!=12 else date(year,12,31)
+    arr = get_attendance_in_range(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    arr_group = [r for r in arr if r.get("group")==group]
+    if not arr_group:
+        safe_edit(call.message.chat.id, call.message.message_id, f"{start.strftime('%B %Y')} uchun {group} bo'yicha davomat topilmadi.")
+        TEMP.pop(uid, None)
+        return
+    lines = [f"📅 Oylik Davomat — {start.strftime('%B %Y')} — {group}"]
+    for rec in arr_group:
+        lines.append(f"\n📆 {rec.get('timestamp','')} — Para: {rec.get('para')}")
+        lines.append("✅ Kelganlar ("+str(len(rec.get("present",[])))+"): "+(", ".join(rec.get("present",[])) if rec.get("present") else "—"))
+        lines.append("❌ Sababsiz ("+str(len(rec.get("sababsiz",[])))+"): "+(", ".join(rec.get("sababsiz",[])) if rec.get("sababsiz") else "—"))
+    safe_edit(call.message.chat.id, call.message.message_id, "\n".join(lines))
+    TEMP.pop(uid, None)
+
+# --- All 'back' to main ---
+@bot.callback_query_handler(func=lambda c: c.data == "back_main")
+@admin_only_callback
+def cb_back_main(call):
+    bot.answer_callback_query(call.id)
+    safe_edit(call.message.chat.id, call.message.message_id, "Asosiy menyu:", reply_markup=main_start_kb())
+
+# --- Admin Commands ---
 @bot.message_handler(commands=["set_log_chat"])
 @admin_only_message
 def cmd_set_log_chat(m: types.Message):
-    # If used in a group, set that group as log target; if used in private with ID param, set that ID
-    if m.chat.type in ("group", "supergroup", "channel"):
+    if m.chat.type in ("group","supergroup","channel"):
         set_log_chat(m.chat.id)
         bot.reply_to(m, f"This chat ({m.chat.title or m.chat.id}) will receive attendance summaries.")
     else:
         parts = m.text.split()
-        if len(parts) >= 2:
+        if len(parts)>=2:
             try:
                 tid = int(parts[1])
                 set_log_chat(tid)
@@ -817,13 +711,12 @@ def cmd_set_log_chat(m: types.Message):
             except Exception:
                 bot.reply_to(m, "Iltimos chat id raqam formatida kiriting.")
         else:
-            bot.reply_to(m, "Agar bu komandani guruh ichida yuborsangiz, bot shu guruhni log chat sifatida sozlaydi. Yoki /set_log_chat <chat_id>")
+            bot.reply_to(m, "Guruhda yuboring yoki: /set_log_chat <chat_id>")
 
 @bot.message_handler(commands=["get_log_chat"])
 @admin_only_message
 def cmd_get_log_chat(m: types.Message):
-    settings = get_settings()
-    lc = settings.get("log_chat_id")
+    lc = get_settings().get("log_chat_id")
     bot.reply_to(m, f"Current log chat id: {lc}")
 
 @bot.message_handler(commands=["clear_log_chat"])
@@ -832,29 +725,25 @@ def cmd_clear_log_chat(m: types.Message):
     clear_log_chat()
     bot.reply_to(m, "Log chat cleared.")
 
-# -------------------------
-# Backup / Restore endpoints
-# -------------------------
 @bot.message_handler(commands=["backup"])
 @admin_only_message
 def cmd_backup(m: types.Message):
     path = backup_db()
     if path:
         try:
-            with open(path, "rb") as f:
-                bot.send_document(m.chat.id, f, caption="DB backup fayli")
+            with open(path,"rb") as f: bot.send_document(m.chat.id, f, caption="DB backup")
             bot.reply_to(m, "Backup yaratildi va yuborildi.")
         except Exception:
             logger.exception("send backup failed")
-            bot.reply_to(m, "Backup yaratildi, ammo yuborishda xato yuz berdi.")
+            bot.reply_to(m, "Backup yaratildi, ammo yuborishda xato.")
     else:
-        bot.reply_to(m, "Backup yaratishda xato yuz berdi.")
+        bot.reply_to(m, "Backup yaratishda xato.")
 
 @bot.message_handler(commands=["restore_from"])
 @admin_only_message
 def cmd_restore_from(m: types.Message):
     parts = m.text.split()
-    if len(parts) < 2:
+    if len(parts)<2:
         bot.reply_to(m, "Foydalanish: /restore_from <backup_filename>")
         return
     fname = parts[1].strip()
@@ -863,28 +752,19 @@ def cmd_restore_from(m: types.Message):
         bot.reply_to(m, "Backup topilmadi.")
         return
     ok = restore_db(path)
-    if ok:
-        bot.reply_to(m, "DB muvaffaqiyatli tiklandi.")
-    else:
-        bot.reply_to(m, "DB tiklashda xato yuz berdi.")
+    bot.reply_to(m, "DB muvaffaqiyatli tiklandi." if ok else "DB tiklashda xato.")
 
-# -------------------------
-# Sample data command
-# -------------------------
 @bot.message_handler(commands=["sample"])
 @admin_only_message
 def cmd_sample(m: types.Message):
     try:
-        add_group("Demo Group A", [f"Demo Student {i}" for i in range(1, 21)], "1111")
-        add_group("Demo Group B", [f"DemoB Student {i}" for i in range(1, 16)], "2222")
+        add_group("Demo Group A", [f"Demo Student {i}" for i in range(1,21)], "1111")
+        add_group("Demo Group B", [f"DemoB Student {i}" for i in range(1,16)], "2222")
         bot.reply_to(m, "Sample groups added.")
     except Exception:
         logger.exception("sample failed")
         bot.reply_to(m, "Sample creation failed.")
 
-# -------------------------
-# Listing groups, cancel, admins
-# -------------------------
 @bot.message_handler(commands=["list_groups"])
 @admin_only_message
 def cmd_list_groups(m: types.Message):
@@ -893,8 +773,8 @@ def cmd_list_groups(m: types.Message):
         bot.reply_to(m, "Guruhlar topilmadi.")
         return
     lines = ["Guruhlar:"]
-    for name, v in sorted(groups.items()):
-        lines.append(f"- {name} ({len(v.get('students', []))} students) code: {v.get('code','')}")
+    for name,v in sorted(groups.items()):
+        lines.append(f"- {name} ({len(v.get('students',[]))} students) code: {v.get('code','')}")
     bot.reply_to(m, "\n".join(lines))
 
 @bot.message_handler(commands=["cancel"])
@@ -908,26 +788,20 @@ def cmd_cancel(m: types.Message):
 
 @bot.message_handler(commands=["admins"])
 def cmd_admins(m: types.Message):
-    uid = m.from_user.id
-    if not is_admin(uid):
+    if not is_admin(m.from_user.id):
         bot.reply_to(m, "Bu komanda faqat adminlarga.")
         return
     bot.reply_to(m, f"Admins: {ADMIN_IDS}")
 
-# -------------------------
-# Fallback / catch-all
-# -------------------------
+# --- Fallback ---
 @bot.message_handler(func=lambda m: True)
 def fallback(m: types.Message):
-    uid = m.from_user.id
-    if is_admin(uid):
-        safe_send(uid, "Admin panel:\n/start — bosh menyu\n/help — yordam", reply_markup=main_start_kb())
+    if is_admin(m.from_user.id):
+        safe_send(m.from_user.id, "Admin panel:\n/start — bosh menyu\n/help — yordam", reply_markup=main_start_kb())
     else:
-        safe_send(uid, "Bu bot faqat adminlar uchun. Iltimos, admin bilan bog'laning.")
+        safe_send(m.from_user.id, "Bu bot faqat adminlar uchun!")
 
-# -------------------------
-# Polling runner
-# -------------------------
+# --- Polling ---
 def run():
     logger.info("Attendance Bot starting...")
     if not ADMIN_IDS:
@@ -941,7 +815,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
-
-
-    
