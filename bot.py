@@ -386,7 +386,7 @@ def cb_attend_select_group(call):
     students = get_groups()[group]["students"]
     status_map = {s: "present" for s in students}
     TEMP[call.from_user.id] = {"flow": "attend", "group": group, "status_map": status_map}
-    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {group}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=student_kb(group, status_map))
+    safe_edit(call.message.chat.id, call.message.message_id, f"Guruh: {group}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=student_kb(group, status_map))
 
 @bot.callback_query_handler(func=lambda c: c.data == "back_attend_groups")
 @admin_only_callback
@@ -406,7 +406,7 @@ def cb_toggle_student(call):
     nxt = "sababsiz" if current == "present" else "sababli" if current == "sababsiz" else "present"
     state["status_map"][student] = nxt
     kb = student_kb(state["group"], state["status_map"])
-    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
+    safe_edit(call.message.chat.id, call.message.message_id, f": {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
     bot.answer_callback_query(call.id, f"{student}: {nxt}")
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("bulk::"))
@@ -421,7 +421,7 @@ def cb_bulk(call):
     status_map = {s: "present" if action=="present" else "sababsiz" for s in students}
     state["status_map"] = status_map
     kb = student_kb(state["group"], status_map)
-    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
+    safe_edit(call.message.chat.id, call.message.message_id, f": {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
     bot.answer_callback_query(call.id, "Barcha holatlar yangilandi.")
 
 @bot.callback_query_handler(func=lambda c: c.data == "confirm_students")
@@ -441,7 +441,7 @@ def cb_back_attend_students(call):
     state = TEMP.get(uid)
     if not state: return
     kb = student_kb(state["group"], state["status_map"])
-    safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
+    safe_edit(call.message.chat.id, call.message.message_id, f": {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("para::"))
 @admin_only_callback
@@ -460,7 +460,7 @@ def cb_para(call):
     para_label = "Butun kun" if para == "all" else f"{para}-para"
     preview = (
         "📝 Davomat Tasdiqlash\n\n"
-        f"🏫 Sinf: {group}\n"
+        f"🏫 Guruh : {group}\n"
         f"⏰ Soat: ({para_label})\n"
         f"📅 Sana: {hr_date}\n\n"
         f"👥 Darsga Kirmagan o'quvchilar ({len(sababsiz)+len(sababli)} ta):\n"
@@ -491,7 +491,7 @@ def cb_final_cancel(call):
     if uid in TEMP:
         state = TEMP[uid]
         kb = student_kb(state["group"], state["status_map"])
-        safe_edit(call.message.chat.id, call.message.message_id, f"Sinf: {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
+        safe_edit(call.message.chat.id, call.message.message_id, f": {state['group']}\nO'quvchilar ro'yxati (✅ — kelgan):", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c: c.data == "final_confirm")
 @admin_only_callback
@@ -517,7 +517,7 @@ def cb_final_confirm(call):
     hr_date = datetime.now().strftime("%d-%B, %Y")
     para_label = "Butun kun" if para == "all" else f"{para}-para"
     final = (
-        f"🏫 Sinf: {group}\n"
+        f"🏫 : {group}\n"
         f"⏰ Soat: {para_label}\n"
         f"📅 Sana: {hr_date}\n\n"
         f"👥 Sababsiz o'quvchilar ({len(sababsiz)} ta):\n"
